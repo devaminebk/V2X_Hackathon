@@ -50,8 +50,6 @@ void updateScreen(String msg) {
 
 // The Warning Sequence
 void triggerSchoolBusWarning() {
-  digitalWrite(ledpin, LOW); // LED ON (Active-LOW assumed)
-
   display.clearDisplay();
   display.setCursor(0, 0);
   display.setTextSize(1);
@@ -59,17 +57,20 @@ void triggerSchoolBusWarning() {
   display.println("------------");
   display.println(" SCHOOL BUS");
   display.println("   AHEAD!");
-  display.display();
+  unsigned long startTime = millis();
+  while (millis() - startTime < 2000) { 
 
-  // Siren-Style Beep
-  for(int i = 0; i < 3; i++) {
+    display.display();// Run for 2 seconds
+    digitalWrite(ledpin, LOW); // LED ON (Active-LOW assumed)
     playTone(1200, 300); 
     delay(50);
     playTone(900, 300);  
     delay(50);
+    digitalWrite(ledpin, HIGH);  // LED OFF
+    delay(200);
   }
 
-  digitalWrite(ledpin, HIGH);  // LED OFF
+  digitalWrite(ledpin, LOW);  // LED OFF
   updateScreen("MONITORING...");
 }
 
@@ -90,7 +91,6 @@ void setup() {
   
   // --- INIT HARDWARE ---
   pinMode(ledpin, OUTPUT);
-  digitalWrite(ledpin, HIGH); 
   pinMode(backlightPin, OUTPUT);
   digitalWrite(backlightPin, HIGH); 
 
@@ -101,6 +101,7 @@ void setup() {
     Serial.println("Display failed!");
     while (1);
   }
+  display.setRotation(2);
   display.setContrast(55); 
   display.clearDisplay();
   display.setTextSize(1);
