@@ -214,17 +214,9 @@ void setup() {
 }
 
 
-// --- PROTOCOL CONSTANTS ---
-#define MSG_STEP_1 1
-#define MSG_STEP_2 2
-#define MSG_STEP_3 3
+
 
 // The constant payload known by both Bus and Car
-
-
-// --- ESP-NOW SETUP ---
-
-
 
 
 
