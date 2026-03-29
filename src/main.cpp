@@ -4,11 +4,6 @@
 #include <Adafruit_GFX.h>
 #include <Adafruit_PCD8544.h>
 
-/* * NOKIA 5110 PINS: RST:4, CE:5, DC:2, DIN:23, CLK:18, VCC:3V3, BL:15, GND:GND
- * BUZZER MODULE PINS: S:13, Middle:3V3, -:GND
- * LED PIN: 12
- */
-
 // --- HARDWARE SETUP ---
 Adafruit_PCD8544 display = Adafruit_PCD8544(18, 23, 2, 5, 4);
 
@@ -18,27 +13,34 @@ const int pwmChannel = 0;
 const int resolution = 8;    
 const int ledpin = 12;       
 
+// --- PROTOCOL CONSTANTS ---
+#define MSG_STEP_1 1
+#define MSG_STEP_2 2
+#define MSG_STEP_3 3
+
+// The constant payload known by both Bus and Car
+const uint32_t SECRET_MESSAGE = 0x5AFE7199;
+uint32_t current_Kc = 0; // Car's unique secret token (regenerated per interaction)
+
 // --- ESP-NOW SETUP ---
-// Structure to receive data (Must match the sender!)
 typedef struct struct_message {
-  int value; 
+    uint8_t msg_type;
+    uint32_t payload;
 } struct_message;
 
-struct_message myData;
-
-// This flag tells the main loop when to sound the alarm
-volatile bool alertTriggered = false; 
+// State tracking variables
+volatile bool isVerifying = false;
+volatile bool alertVerified = false; 
+unsigned long verifyStartTime = 0;
+uint8_t busMac[6];
 
 // --- FUNCTIONS ---
-
-// Function to play a quick tone
 void playTone(int freq, int ms) {
   ledcWriteTone(pwmChannel, freq);
   delay(ms);
   ledcWriteTone(pwmChannel, 0); 
 }
 
-// Simple helper to refresh screen text
 void updateScreen(String msg) {
   display.clearDisplay();
   display.setCursor(0, 0);
@@ -48,8 +50,19 @@ void updateScreen(String msg) {
   display.display();
 }
 
-// The Warning Sequence
-void triggerSchoolBusWarning() {
+void addPeer(const uint8_t* mac) {
+    if (!esp_now_is_peer_exist(mac)) {
+        esp_now_peer_info_t peerInfo;
+        memset(&peerInfo, 0, sizeof(peerInfo));
+        memcpy(peerInfo.peer_addr, mac, 6);
+        peerInfo.channel = 0;
+        peerInfo.encrypt = false;
+        esp_now_add_peer(&peerInfo);
+    }
+}
+
+// Full hardware warning sequence for Legitimate Bus
+void triggerLegitimateWarning() {
   display.clearDisplay();
   display.setCursor(0, 0);
   display.setTextSize(1);
@@ -57,39 +70,76 @@ void triggerSchoolBusWarning() {
   display.println("------------");
   display.println(" SCHOOL BUS");
   display.println("   AHEAD!");
-  unsigned long startTime = millis();
-  while (millis() - startTime < 2000) { 
+  display.display();
 
-    display.display();// Run for 2 seconds
-    digitalWrite(ledpin, LOW); // LED ON (Active-LOW assumed)
-    playTone(1200, 300); 
+  unsigned long startTime = millis();
+  while (millis() - startTime < 3000) {  // 3-second robust warning
+    digitalWrite(ledpin, LOW); 
+    playTone(1200, 150); 
     delay(50);
-    playTone(900, 300);  
+    playTone(900, 150);  
     delay(50);
-    digitalWrite(ledpin, HIGH);  // LED OFF
-    delay(200);
+    digitalWrite(ledpin, HIGH);  
+    delay(100);
   }
 
-  digitalWrite(ledpin, LOW);  // LED OFF
+  digitalWrite(ledpin, HIGH);  
   updateScreen("MONITORING...");
 }
 
-// Callback function that executes when data is received
+// Silent visual warning for Spoofed/Failed Verification
+void triggerSpoofWarning() {
+  display.clearDisplay();
+  display.setCursor(0, 0);
+  display.setTextSize(1);
+  display.println("   ALERT!");
+  display.println("------------");
+  display.println("   FALSE");
+  display.println("  POSITIVE");
+  display.display();
+
+  delay(2500); // Show false positive silently for 2.5 seconds
+  updateScreen("MONITORING...");
+}
+
+// --- ESP-NOW Callback ---
 void OnDataRecv(const uint8_t * mac, const uint8_t *incomingData, int len) {
-  memcpy(&myData, incomingData, sizeof(myData));
-  Serial.print("Received Value: ");
-  Serial.println(myData.value);
+  struct_message incoming;
+  memcpy(&incoming, incomingData, sizeof(incoming));
   
-  // If the sender sends a "1" (or any specific value), trigger the alert!
-  if (myData.value == 1010) {
-    alertTriggered = true; 
+  // Step 1: Bus initiates protocol. 
+  if (incoming.msg_type == MSG_STEP_1 && !isVerifying) {
+      isVerifying = true;
+      verifyStartTime = millis();
+      memcpy(busMac, mac, 6);
+      addPeer(busMac); 
+
+      // Car applies its token (Kc) to the payload and sends it back
+      current_Kc = esp_random();
+      uint32_t step2_payload = incoming.payload ^ current_Kc; 
+
+      struct_message step2Msg;
+      step2Msg.msg_type = MSG_STEP_2;
+      step2Msg.payload = step2_payload;
+      esp_now_send(busMac, (uint8_t *) &step2Msg, sizeof(step2Msg));
+  }
+  
+  // Step 3: Bus sends back the final layer. Car evaluates it.
+  else if (incoming.msg_type == MSG_STEP_3 && isVerifying) {
+      if (memcmp(mac, busMac, 6) == 0) { 
+          uint32_t final_check = incoming.payload ^ current_Kc; // Remove Kc
+          
+          if (final_check == SECRET_MESSAGE) {
+              alertVerified = true; // Protocol matched!
+          }
+          isVerifying = false; // Close the verification window
+      }
   }
 }
 
 void setup() {
   Serial.begin(115200);
   
-  // --- INIT HARDWARE ---
   pinMode(ledpin, OUTPUT);
   pinMode(backlightPin, OUTPUT);
   digitalWrite(backlightPin, HIGH); 
@@ -107,35 +157,34 @@ void setup() {
   display.setTextSize(1);
   display.setTextColor(BLACK);
 
-  // --- INIT ESP-NOW ---
-  WiFi.mode(WIFI_STA); // Set device as a Wi-Fi Station
-  Serial.print("Receiver MAC Address: ");
-  Serial.println(WiFi.macAddress()); // Note this down for your sender!
+  WiFi.mode(WIFI_STA);
 
   if (esp_now_init() != ESP_OK) {
     Serial.println("Error initializing ESP-NOW");
     return;
   }
   
-  // Register the receive callback
   esp_now_register_recv_cb(OnDataRecv);
 
-  // Startup Beep & Screen
   updateScreen(" INITIALIZING");
   playTone(880, 100); delay(50);
   playTone(1318, 200); delay(1000);
   
   updateScreen("MONITORING...");
-  Serial.println("System Ready. Waiting for ESP-NOW alerts...");
 }
 
 void loop() {
-  // Check if the ESP-NOW callback flipped our alert flag
-  if (alertTriggered == true) {
-    triggerSchoolBusWarning(); // Run the lights and sounds
-    alertTriggered = false;    // Reset the flag so it doesn't loop forever
+  // Scenario 1: Legitimate verification completed successfully
+  if (alertVerified) {
+    alertVerified = false; 
+    triggerLegitimateWarning(); 
   }
   
-  // Let the ESP32 breathe
+  // Scenario 2: Verification window expired (Spoofer sent Step 1 but couldn't finish)
+  if (isVerifying && (millis() - verifyStartTime > 400)) {
+    isVerifying = false; // Close window
+    triggerSpoofWarning(); // Silent OLED alert
+  }
+
   delay(10); 
 }
