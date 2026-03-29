@@ -98,7 +98,7 @@ void triggerSpoofWarning() {
   display.println("  POSITIVE");
   display.display();
 
-  delay(2500); // Show false positive silently for 2.5 seconds
+  delay(1500); // Show false positive silently for 1.5 seconds
   updateScreen("MONITORING...");
 }
 
@@ -106,6 +106,17 @@ void triggerSpoofWarning() {
 void OnDataRecv(const uint8_t * mac, const uint8_t *incomingData, int len) {
   struct_message incoming;
   memcpy(&incoming, incomingData, sizeof(incoming));
+
+  // --- DEBUGGING: Print every single incoming packet ---
+  Serial.println("\n=== NEW PACKET RECEIVED ===");
+  Serial.printf("From MAC: %02X:%02X:%02X:%02X:%02X:%02X\n", 
+                 mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
+  Serial.print("Message Type: ");
+  Serial.println(incoming.msg_type);
+  Serial.print("Payload (HEX): 0x");
+  Serial.println(incoming.payload, HEX);
+  Serial.println("===========================\n");
+  // ----------------------------------------------------
   
   // Step 1: Bus initiates protocol. 
   if (incoming.msg_type == MSG_STEP_1 && !isVerifying) {
@@ -131,6 +142,9 @@ void OnDataRecv(const uint8_t * mac, const uint8_t *incomingData, int len) {
           
           if (final_check == SECRET_MESSAGE) {
               alertVerified = true; // Protocol matched!
+              Serial.println("--> Verification SUCCESS! Triggering Alarm.");
+          } else {
+              Serial.println("--> Verification FAILED! Math doesn't match.");
           }
           isVerifying = false; // Close the verification window
       }
